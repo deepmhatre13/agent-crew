@@ -80,6 +80,7 @@ export default function App() {
                 );
               })}
             </div>
+            
           </section>
 
           <section>
@@ -92,6 +93,17 @@ export default function App() {
           </section>
         </div>
       )}
+      <footer style={styles.footer}>
+        <div style={styles.footerLogo}>🤖 AgentCrew</div>
+        <div style={styles.footerLinks}>
+          <a href="https://github.com/your-repo" style={styles.footerLink}>GitHub</a>
+          <span style={styles.footerDot}>·</span>
+          <a href="https://github.com/your-repo/blob/main/LICENSE" style={styles.footerLink}>MIT License</a>
+          <span style={styles.footerDot}>·</span>
+          <a href="https://github.com/your-repo/graphs/contributors" style={styles.footerLink}>Contributors</a>
+        </div>
+        <p style={styles.footerBuilt}>Built with React · FastAPI · LangGraph · Gemini</p>
+      </footer>
     </div>
   );
 }
@@ -160,4 +172,10 @@ const styles = {
   },
   report: { background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 8, padding: "1rem" },
   reportText: { whiteSpace: "pre-wrap", fontFamily: "inherit", lineHeight: 1.6, margin: 0 },
+  footer: { marginTop: "3rem", paddingTop: "1.5rem", borderTop: "1px solid #e2e8f0", textAlign: "center", color: "#888", fontSize: "0.85rem", display: "flex", flexDirection: "column", gap: "0.5rem" },
+  footerLogo: { fontWeight: 700, fontSize: "1rem", color: "#1e1e1e" },
+  footerLinks: { display: "flex", justifyContent: "center", gap: "0.5rem", alignItems: "center" },
+  footerLink: { color: "#6366f1", textDecoration: "none" },
+  footerDot: { color: "#ccc" },
+  footerBuilt: { margin: 0, color: "#aaa" },
 };
