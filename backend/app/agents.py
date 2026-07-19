@@ -8,29 +8,83 @@ Each node calls Gemini with a role-specific system prompt. State is a plain
 TypedDict passed between nodes, which keeps the graph easy to read and easy
 for contributors to extend with new agents (e.g. a "fact_checker" node).
 """
-import os
+import logging
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TypedDict, List
 
 from google import genai
 from google.genai import types
+from google.genai.errors import APIError, ServerError
 from langgraph.graph import StateGraph, END
 
 from .tools import web_search, format_search_results
+from .config import settings
 
-MODEL = os.environ.get("AGENT_MODEL", "gemini-2.5-flash")
-client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+logger = logging.getLogger(__name__)
+
+MODEL = settings.gemini_model
+_client = None
+
+_TRANSIENT_CODES = frozenset({429, 500, 502, 503, 504})
+
+
+def _get_client():
+    global _client
+    if _client is None:
+        _client = genai.Client(api_key=settings.gemini_api_key)
+    return _client
+
+
+def _is_retryable(exc: Exception) -> bool:
+    if isinstance(exc, ServerError):
+        return exc.code in _TRANSIENT_CODES
+    if isinstance(exc, APIError):
+        return exc.code in _TRANSIENT_CODES
+    return isinstance(exc, (TimeoutError, ConnectionError, OSError))
 
 
 def call_llm(system: str, user: str, max_tokens: int = 1200) -> str:
-    resp = client.models.generate_content(
-        model=MODEL,
-        contents=user,
-        config=types.GenerateContentConfig(
-            system_instruction=system,
-            max_output_tokens=max_tokens,
-        ),
+    last_exc = None
+    for attempt in range(1, settings.gemini_retry_attempts + 1):
+        try:
+            logger.info("Gemini request started attempt=%d", attempt)
+            executor = ThreadPoolExecutor(max_workers=1)
+            try:
+                future = executor.submit(
+                    _get_client().models.generate_content,
+                    model=MODEL,
+                    contents=user,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system,
+                        max_output_tokens=max_tokens,
+                    ),
+                )
+                resp = future.result(timeout=settings.gemini_request_timeout)
+            finally:
+                executor.shutdown(wait=False)
+            logger.info("Gemini request succeeded attempt=%d", attempt)
+            return resp.text or ""
+        except Exception as exc:
+            last_exc = exc
+            logger.error(
+                "Gemini request failed attempt=%d error=%s",
+                attempt,
+                exc,
+                exc_info=True,
+            )
+            if not _is_retryable(exc) or attempt >= settings.gemini_retry_attempts:
+                break
+            backoff = min(
+                settings.gemini_backoff_base * (2 ** (attempt - 1)),
+                settings.gemini_backoff_max,
+            )
+            logger.info("Retrying Gemini request in %.3f seconds", backoff)
+            time.sleep(backoff)
+
+    raise RuntimeError(
+        f"Gemini API call failed after {settings.gemini_retry_attempts} attempts: {last_exc}"
     )
-    return resp.text or ""
 
 
 class GraphState(TypedDict):
@@ -64,10 +118,50 @@ def planner_node(state: GraphState) -> GraphState:
 
 
 def researcher_node(state: GraphState) -> GraphState:
-    notes = []
-    for q in state["sub_questions"]:
-        results = web_search(q)
-        notes.append(f"Sub-question: {q}\n{format_search_results(results)}")
+    sub_questions = state.get("sub_questions", [])
+    notes: List[str] = []
+
+    if sub_questions:
+        logger.info("Starting %d concurrent research task(s)", len(sub_questions))
+
+        ordered_results = [None] * len(sub_questions)
+
+        with ThreadPoolExecutor(max_workers=min(8, len(sub_questions))) as executor:
+            future_to_index = {}
+            for index, question in enumerate(sub_questions):
+                logger.debug("Submitting search for: %s", question)
+                future = executor.submit(web_search, question)
+                future_to_index[future] = index
+
+            for future in as_completed(future_to_index):
+                index = future_to_index[future]
+                question = sub_questions[index]
+                try:
+                    start = time.perf_counter()
+                    results = future.result()
+                    duration = time.perf_counter() - start
+                    logger.info(
+                        "Search completed for '%s' in %.3f seconds (%d results)",
+                        question,
+                        duration,
+                        len(results),
+                    )
+                    ordered_results[index] = (
+                        f"Sub-question: {question}\n{format_search_results(results)}"
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "Search failed for '%s': %s",
+                        question,
+                        exc,
+                        exc_info=True,
+                    )
+                    ordered_results[index] = (
+                        f"Sub-question: {question}\nSearch failed: {exc}"
+                    )
+
+        notes = [note for note in ordered_results if note is not None]
+
     combined = "\n\n".join(notes)
 
     system = (
