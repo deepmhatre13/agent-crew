@@ -23,7 +23,6 @@ from .config import settings
 
 logger = logging.getLogger(__name__)
 
-
 MODEL = settings.gemini_model
 TRANSIENT_HTTP_CODES = frozenset({429, 500, 502, 503, 504})
 _client = None
@@ -281,6 +280,7 @@ def build_graph():
 
 
 _compiled_graph = None
+
 
 def get_graph():
     """Return the compiled graph, initializing it on first access."""
